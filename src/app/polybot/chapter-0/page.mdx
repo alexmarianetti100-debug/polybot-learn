@@ -1,0 +1,139 @@
+export const metadata = {
+  title: "Chapter 0 — Why prediction markets?",
+  description:
+    "Why edges exist in prediction markets, why they're hard to capture, and what we'll build.",
+};
+
+<div className="prose prose-zinc dark:prose-invert prose-pre:bg-zinc-950 max-w-none">
+
+# Chapter 0 — Why prediction markets?
+
+A prediction market is a place where people bet on whether something will
+happen. *Will the Fed cut rates in March? Will the Lakers make the playoffs?
+Will GDP exceed 3% this quarter?* Each question is a contract. You can buy YES
+or NO, usually for somewhere between one cent and ninety-nine cents. If the
+event resolves in your favor, your contract pays out a dollar. If it
+doesn&apos;t, it pays zero.
+
+This sounds like sports betting, and structurally it is. But two things make
+prediction markets interesting from a trading perspective:
+
+1. **Prices look like probabilities.** A YES contract trading at 72 cents is
+   the market&apos;s collective guess that the event will happen 72% of the
+   time. That makes them mathematically tractable in a way that, say, equity
+   prices are not.
+
+2. **They are not perfectly efficient.** Stock markets have decades of
+   academic attention, professional market makers, and high-frequency arb
+   firms shaving milliseconds. Prediction markets have... a few crypto
+   degens, some retail bettors, and a small number of quant shops. The slop
+   is much bigger.
+
+That second point is what this curriculum is about. The slop is real, it&apos;s
+measurable, and you can capture some of it with code that fits in a single
+repo.
+
+## Three kinds of slop
+
+Over the next chapters we&apos;ll exploit three specific kinds of inefficiency.
+This is not a survey — these are the three I built strategies for in my own
+bot, the three where I have actual data showing they exist on real exchanges
+right now.
+
+### 1. Logic arbitrage
+
+Prediction markets often list *threshold families.* For example, on Kalshi:
+
+- Will GDP exceed 1%?
+- Will GDP exceed 2%?
+- Will GDP exceed 3%?
+
+These three are mathematically related: anyone who wins the third one also
+wins the first two. So the price of "GDP exceeds 3%" must be less than or
+equal to the price of "GDP exceeds 2%". When it isn&apos;t — when the prices
+go non-monotonic by even a cent — there&apos;s a guaranteed-profit trade. You
+buy the cheap one, sell the expensive one, and collect the difference no
+matter what GDP actually does.
+
+These mispricings show up. Not constantly, but frequently enough that a
+scanner running every fifteen minutes will catch a few per day across the
+hundreds of threshold families on a typical exchange. We&apos;ll build that
+scanner in chapter 3.
+
+### 2. Short arbitrage
+
+In multi-outcome markets — say, "who wins the 2026 Super Bowl?" — exactly one
+outcome will resolve YES and all the others will resolve NO. So the YES
+prices across all outcomes should sum to roughly 100 cents. (Roughly, not
+exactly — fees and the bid-ask spread create a small wedge.)
+
+When the YES sum exceeds 100 cents by more than the wedge, you can buy NO on
+every outcome. One of them will lose, but the rest will all pay out a dollar
+each. The math guarantees a profit if you can fill all the legs.
+
+The catch is the "if you can fill all the legs." We&apos;ll spend a whole
+chapter on the orderbook depth checks that decide whether a strategy actually
+trades or just generates pretty alerts.
+
+### 3. The favorite-longshot bias
+
+This one is the most interesting and the most fragile. Across many years of
+sports betting and prediction markets, researchers have observed that
+**favorites are systematically underpriced and longshots are systematically
+overpriced.** A contract trading at 72 cents wins, on average, more than 72%
+of the time. A contract trading at 5 cents wins less than 5% of the time.
+
+The size of the bias depends on the platform, the category, and the time
+period. Most academic papers report it as a gentle curve. When I calibrated
+my own bias model on 17,258 settled Kalshi markets, I found something
+sharper: the edge is concentrated in the 70-to-85 cent range on economics
+markets specifically. A contract trading at 75 cents on Kalshi&apos;s
+economics category wins about 87% of the time — twelve points above its
+listed price.
+
+Twelve points sounds huge. It is. It is also fragile. In sports markets it
+disappears. In culture and politics markets it&apos;s weak. On Polymarket it
+behaves differently. Half of building a working FLB strategy is figuring out
+where the edge actually lives and refusing to trade everywhere else.
+
+## What we&apos;ll build
+
+By the end of this curriculum you will have:
+
+- A working Python codebase that fetches live market data from Polymarket and
+  Kalshi.
+- Three scanners — one for each kind of inefficiency — that produce
+  structured opportunity records as JSON.
+- A validator that runs eight checks against each opportunity before any
+  capital is committed.
+- A position sizer that uses the Kelly criterion (and explains why
+  half-Kelly is what serious people actually use).
+- A paper-trading harness that simulates fills realistically enough to
+  actually mean something.
+- A live-trading mode with a three-layer safety system that makes it
+  structurally hard to deploy real money by accident.
+- A small dashboard that shows you what the bot is doing and why.
+
+That&apos;s a lot. We&apos;ll build it incrementally, one chapter at a time,
+and every chapter ends with a runnable script that does something real.
+
+## The honest part
+
+Most strategies don&apos;t work. In my own bot, I tested five FLB variants —
+Kalshi economics, Kalshi sports, Kalshi culture/politics, Kalshi
+weather/other, and Polymarket sports. **One of them is profitable.** The
+other four were killed because the win rate didn&apos;t clear the breakeven
+threshold after fees, even on data that looked promising at first.
+
+The point of this curriculum is not to hand you a working money-printer.
+The point is to give you the infrastructure — the scanners, the validators,
+the sizers, the safety systems — so that when *you* find an edge, you have
+the tools to capture it carefully. The edges are out there. Most of them are
+small, fragile, and conditional. Capturing them takes engineering as much as
+it takes finding them.
+
+If you&apos;re ready, [Chapter 1](/polybot/chapter-1) is your first
+runnable Python script. You&apos;ll see real prediction-market prices in
+your terminal in under five minutes, no signup required.
+
+</div>

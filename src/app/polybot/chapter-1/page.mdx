@@ -1,0 +1,212 @@
+export const metadata = {
+  title: "Chapter 1 — Your first market query",
+  description:
+    "Hit Polymarket's public API in 30 lines of Python. No auth, no signup.",
+};
+
+<div className="prose prose-zinc dark:prose-invert prose-pre:bg-zinc-950 max-w-none">
+
+# Chapter 1 — Your first market query
+
+In this chapter you will write a Python script that fetches the most active
+prediction markets in the world right now and prints them to your terminal.
+It uses no API key, no signup, no wallet, no authentication. The total line
+count is under forty, and most of those lines are comments and whitespace.
+
+## What you need
+
+- Python 3.9 or newer (`python3 --version` to check)
+- The `requests` library (`pip install requests`)
+- An internet connection
+
+That&apos;s it. Let&apos;s get you running first, then read what the code is
+doing.
+
+## Run it
+
+Clone the repo and run chapter 1:
+
+```bash
+git clone https://github.com/alexmarianetti/polybot-learn.git
+cd polybot-learn/tutorials/chapter_01
+pip install -r requirements.txt
+python main.py
+```
+
+You should see output similar to this — different markets, since these
+update minute-by-minute, but the same shape:
+
+```
+2024 Presidential Election
+  24h volume: $3,184,202
+  - Will Donald Trump win?
+    YES @ $0.51
+  - Will Kamala Harris win?
+    YES @ $0.48
+
+Fed decision in December
+  24h volume: $812,455
+  - 25 bps cut?
+    YES @ $0.74
+  - No change?
+    YES @ $0.21
+```
+
+That&apos;s real, live prediction-market data. Five minutes ago you had no
+trading bot. Now you have *something* — a tiny one, but something. Let&apos;s
+read the code.
+
+## The code, line by line
+
+Here&apos;s the whole script:
+
+```python
+import json
+import requests
+
+GAMMA_API = "https://gamma-api.polymarket.com"
+
+def fetch_top_events(limit: int = 5) -> list[dict]:
+    response = requests.get(
+        f"{GAMMA_API}/events",
+        params={
+            "limit": limit,
+            "active": "true",
+            "closed": "false",
+            "order": "volume24hr",
+            "ascending": "false",
+        },
+        timeout=10,
+    )
+    response.raise_for_status()
+    return response.json()
+
+def main() -> None:
+    events = fetch_top_events(limit=3)
+    for event in events:
+        title = event.get("title", "(untitled)")
+        volume = float(event.get("volume24hr", 0) or 0)
+        print(f"\n{title}")
+        print(f"  24h volume: ${volume:,.0f}")
+
+        for market in event.get("markets", []):
+            if market.get("closed"):
+                continue
+            question = market.get("question", "(no question)")[:80]
+
+            # outcomePrices ships as a JSON-encoded *string*, not a list.
+            prices_raw = market.get("outcomePrices", "[]")
+            prices = json.loads(prices_raw) if isinstance(prices_raw, str) else prices_raw
+            yes_price = prices[0] if prices else "?"
+
+            print(f"  - {question}")
+            print(f"    YES @ ${yes_price}")
+
+if __name__ == "__main__":
+    main()
+```
+
+### What `requests.get` is doing
+
+You&apos;re sending an HTTP `GET` request to
+`https://gamma-api.polymarket.com/events`. This is Polymarket&apos;s public
+"Gamma" API. It is read-only and unauthenticated — anyone can hit it,
+including you.
+
+The query parameters tell the API what you want:
+
+- `active=true, closed=false` — only currently-trading markets, not historical ones
+- `order=volume24hr, ascending=false` — sort by 24-hour trading volume, biggest first
+- `limit=5` — give me the top five
+
+The `timeout=10` is important. Without it, a hung server can hang your
+script forever. Ten seconds is generous; in production we&apos;ll tune it
+down.
+
+### The shape of the response
+
+The API returns a list of *events*. An event is a real-world question — for
+example, "who will win the 2024 election?" Each event contains one or more
+*markets*: the actual buy/sell instruments. The event "2024 Presidential
+Election" might have markets for Trump, Harris, and a long-tail of also-rans,
+each with its own YES price.
+
+Mentally:
+
+```
+Event "2024 Presidential Election"
+├── Market "Will Donald Trump win?"  (YES @ $0.51)
+├── Market "Will Kamala Harris win?" (YES @ $0.48)
+└── Market "Will RFK Jr win?"        (YES @ $0.01)
+```
+
+You will trade *markets*, not events. The event is just a grouping.
+
+### The `outcomePrices` quirk
+
+Look at this section of the code:
+
+```python
+prices_raw = market.get("outcomePrices", "[]")
+prices = json.loads(prices_raw) if isinstance(prices_raw, str) else prices_raw
+```
+
+`outcomePrices` is the YES and NO price for a market — but Polymarket ships
+it as a JSON-encoded *string*, not as a real list:
+
+```json
+{
+  "question": "Will Donald Trump win?",
+  "outcomePrices": "[\"0.51\", \"0.49\"]"
+}
+```
+
+That string starts with a `[` and ends with a `]`, but you can&apos;t index
+into it like a list until you parse it. So we call `json.loads`. This kind
+of one-off format weirdness is the *normal* state of working with public
+APIs. Real-world data is messy. Get used to defensively parsing.
+
+## What you just learned
+
+You wrote a script that:
+
+1. Hit a real prediction-market API over HTTPS.
+2. Filtered for active, currently-trading markets.
+3. Sorted by 24-hour volume to find the most liquid markets.
+4. Parsed a slightly-weird response format and extracted prices.
+
+This is a third of what a "scanner" — the thing that finds trading
+opportunities — does. The other two thirds are *running this loop on a
+schedule* and *deciding which results are worth acting on*. We&apos;ll build
+both in later chapters.
+
+## Try this before moving on
+
+Edit `main.py` and change `limit=3` to `limit=10`. Notice that the volume
+drops sharply between the top markets and the long tail. Most prediction
+markets are dead — almost no trading happens on them. The bot you&apos;re
+building will need to *aggressively filter* by liquidity, otherwise you
+will calculate beautiful edges in markets where you can never get filled.
+
+Now bump it back to `limit=3` and add a third `print` line that shows the
+NO price too:
+
+```python
+no_price = prices[1] if len(prices) > 1 else "?"
+print(f"    NO @ ${no_price}")
+```
+
+Notice that YES + NO sums to roughly 1.00 on most markets. When it
+doesn&apos;t — when the sum exceeds 1.00 — that&apos;s the gap that&apos;s
+exploitable by [short arbitrage](/polybot/chapter-0#short-arbitrage). Hold
+that thought; we&apos;ll build the scanner in chapter 3.
+
+## What&apos;s next
+
+Chapter 2 introduces the orderbook. The "price" you saw above is the *last
+trade*, which can be misleading — the price you&apos;d actually pay
+right now depends on the depth and shape of the order book. We&apos;ll
+fetch a real book, compute the bid-ask spread, and start to see why
+"the price is 72 cents" is a lie 70% of the time.
+
+</div>

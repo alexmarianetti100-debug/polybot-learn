@@ -1,0 +1,251 @@
+export const metadata = {
+  title: "Chapter 2 — Reading an orderbook",
+  description:
+    "The price you saw in chapter 1 was a lie. Fetch a real book, compute the spread, and start to see why depth is the thing that decides whether a strategy can actually trade.",
+};
+
+<div className="prose prose-zinc dark:prose-invert prose-pre:bg-zinc-950 max-w-none">
+
+# Chapter 2 — Reading an orderbook
+
+In chapter 1 you printed `YES @ $0.51`. Take a closer look at that number and
+ask: *if I wanted to actually buy a YES contract right now, would I pay 51
+cents?*
+
+The answer is almost always no. The 51 cents is the **last trade** — what
+someone paid the last time anyone traded in that market. The price *you* would
+pay right now is whatever the cheapest seller is asking. That price might be 51
+cents, but it might also be 53, or 60, or 78 if the market is illiquid.
+
+This chapter introduces the **orderbook**: the underlying data structure that
+actually decides what you pay. Once you can read a book, you can answer three
+questions that the last-trade price can&apos;t:
+
+1. *What would I pay to buy right now?* (the best ask)
+2. *What would I get if I sold right now?* (the best bid)
+3. *How big can my order be without moving the price?* (depth)
+
+The third one is the one that kills bots. We&apos;ll get to that.
+
+## What an orderbook is
+
+When you place a limit order on a prediction market, your order doesn&apos;t
+execute immediately. It sits on the *book* — a list of standing offers — until
+someone else takes the other side. The book has two sides:
+
+- **Bids**: people who want to BUY at a specific price (or lower)
+- **Asks**: people who want to SELL at a specific price (or higher)
+
+Each side is sorted by price, and at each price level there might be multiple
+contracts available (the *size*). For a given market token (one outcome of one
+event) the book might look like this:
+
+```
+ASKS (people selling — what you'd pay to buy)
+  $0.55  ×  120 contracts
+  $0.54  ×   80 contracts
+  $0.52  ×   45 contracts   ← best ask (lowest)
+
+  ─── spread ($0.02) ───
+
+  $0.50  ×   60 contracts   ← best bid (highest)
+  $0.48  ×  100 contracts
+  $0.45  ×  200 contracts
+BIDS (people buying — what you'd get if you sold)
+```
+
+The **best bid** is the highest price someone is willing to pay. The **best
+ask** is the lowest price someone is willing to accept. The gap between them
+is the **bid-ask spread**, and it represents the cost of trading even when you
+do everything right.
+
+The "midpoint price" is just `(best_bid + best_ask) / 2`. That&apos;s usually
+what people mean when they say "the price." It&apos;s also what your bot will
+use to decide whether an opportunity exists, even though your bot will
+actually trade *against the book*, not at the midpoint.
+
+## Run it
+
+```bash
+cd polybot-learn/tutorials/chapter_02
+pip install -r requirements.txt
+python main.py
+```
+
+Expected output (your numbers will differ):
+
+```
+Market: Will the Fed cut rates in December?
+
+Best bid: $0.420
+Best ask: $0.435
+Mid:      $0.428
+Spread:   $0.015 (3.5%)
+
+Depth at top level:
+  Bid: 1,250 contracts
+  Ask: 4,800 contracts
+```
+
+## The code
+
+```python
+import json
+import requests
+
+GAMMA_API = "https://gamma-api.polymarket.com"
+CLOB_API = "https://clob.polymarket.com"
+
+
+def fetch_top_market() -> dict:
+    """Pick the most-active currently-trading market."""
+    response = requests.get(
+        f"{GAMMA_API}/events",
+        params={
+            "limit": 1,
+            "active": "true",
+            "closed": "false",
+            "order": "volume24hr",
+            "ascending": "false",
+        },
+        timeout=10,
+    )
+    response.raise_for_status()
+    for event in response.json():
+        for market in event.get("markets", []):
+            if not market.get("closed"):
+                return market
+    raise RuntimeError("No active markets found")
+
+
+def fetch_orderbook(token_id: str) -> dict:
+    response = requests.get(
+        f"{CLOB_API}/book",
+        params={"token_id": token_id},
+        timeout=10,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def main() -> None:
+    market = fetch_top_market()
+    print(f"Market: {market.get('question', '?')}\n")
+
+    token_ids_raw = market.get("clobTokenIds", "[]")
+    token_ids = (
+        json.loads(token_ids_raw)
+        if isinstance(token_ids_raw, str)
+        else token_ids_raw
+    )
+    if not token_ids:
+        print("No CLOB token IDs — market not yet live.")
+        return
+
+    yes_token = token_ids[0]  # outcome 0 = YES
+    book = fetch_orderbook(yes_token)
+
+    bids = book.get("bids", [])
+    asks = book.get("asks", [])
+
+    if not bids or not asks:
+        print("Empty book — illiquid market.")
+        return
+
+    # Don't assume the API sorts these for us. Compute defensively.
+    best_bid = max(float(b["price"]) for b in bids)
+    best_ask = min(float(a["price"]) for a in asks)
+
+    mid = (best_bid + best_ask) / 2
+    spread = best_ask - best_bid
+
+    print(f"Best bid: ${best_bid:.3f}")
+    print(f"Best ask: ${best_ask:.3f}")
+    print(f"Mid:      ${mid:.3f}")
+    print(f"Spread:   ${spread:.3f} ({spread / mid * 100:.1f}%)")
+
+    bid_size = sum(float(b["size"]) for b in bids if float(b["price"]) == best_bid)
+    ask_size = sum(float(a["size"]) for a in asks if float(a["price"]) == best_ask)
+
+    print(f"\nDepth at top level:")
+    print(f"  Bid: {bid_size:,.0f} contracts")
+    print(f"  Ask: {ask_size:,.0f} contracts")
+```
+
+A few things worth pausing on.
+
+### `clobTokenIds` is two tokens, not one
+
+A Polymarket binary market is actually two separate tokens that trade
+independently: one for YES, one for NO. `clobTokenIds[0]` is the YES side,
+`clobTokenIds[1]` is the NO side. They have *separate orderbooks*.
+
+This is important: in chapter 5 you&apos;ll learn that NO @ $0.40 and YES @
+$0.61 are inconsistent (they sum to more than $1.00), and that gap is
+something you can capture. To do that, you have to fetch both books.
+
+### The defensive `max` and `min`
+
+I wrote:
+
+```python
+best_bid = max(float(b["price"]) for b in bids)
+best_ask = min(float(a["price"]) for a in asks)
+```
+
+You could probably write `bids[0]` and `asks[0]` and have it work most of the
+time. APIs *usually* sort their books. But "usually" is a great way to write
+a bot that silently does the wrong thing for a week. Computing the best bid
+as `max(bids)` is ten characters longer and saves you from a class of bug
+that&apos;s painful to find later.
+
+### The spread is a lie too
+
+When I print `Spread: $0.015 (3.5%)`, that&apos;s the spread *at the top of
+the book*. If you wanted to buy 100 contracts and only 45 contracts are
+available at the best ask, you&apos;d eat into the next price level too —
+and your effective spread would be larger.
+
+The real number that matters is the **fill-weighted average price**, which
+depends on order size. We&apos;ll compute it in chapter 3 when we build the
+scanner that actually decides whether a trade is worth doing.
+
+## Try this before moving on
+
+Modify `main.py` to also print the **NO-side** orderbook. The pattern:
+
+```python
+no_token = token_ids[1]
+no_book = fetch_orderbook(no_token)
+# ... same calculation as YES
+```
+
+Print both side by side. Notice that `YES_best_ask + NO_best_ask` should
+sum to roughly $1.00 — *but not exactly*. If it sums to $1.04, that&apos;s a
+4-cent gap that exists because YES and NO orderbooks are populated by
+different traders with slightly different beliefs about the fair price. The
+short-arbitrage strategy from chapter 0 captures that gap.
+
+We&apos;re not building the scanner yet. Just notice the gap exists. Bots
+that capture this scan thousands of markets a minute looking for the gap to
+exceed a threshold; we&apos;ll build that loop next chapter.
+
+## What you just learned
+
+- An orderbook is sorted bids + sorted asks. The "price" you see on a
+  website is almost always misleading.
+- The best ask is what you&apos;d pay; the best bid is what you&apos;d
+  receive.
+- Spread is the cost of trading even when nothing else goes wrong.
+- Polymarket markets are two tokens (YES, NO) with two separate books.
+- Most bots that fail in production fail because they didn&apos;t check
+  depth and tried to fill orders that didn&apos;t fit.
+
+## What&apos;s next
+
+[Chapter 3](/polybot/chapter-3) builds your first scanner — a loop that
+fetches dozens of orderbooks and finds the YES/NO gaps where short
+arbitrage is theoretically tradeable. Theoretically is doing a lot of work
+in that sentence. We&apos;ll see why.
+
+</div>
