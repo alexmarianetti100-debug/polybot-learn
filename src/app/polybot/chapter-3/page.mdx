@@ -1,0 +1,276 @@
+export const metadata = {
+  title: "Chapter 3 — Your first scanner",
+  description:
+    "Polling hundreds of markets, finding YES/NO gaps where short-arbitrage is theoretically tradeable, and the dedup trick that stops you from logging the same opportunity 200 times in a row.",
+};
+
+<div className="prose prose-zinc dark:prose-invert prose-pre:bg-zinc-950 max-w-none">
+
+# Chapter 3 — Your first scanner
+
+In chapter 2 you fetched one orderbook. The short-arbitrage strategy from
+chapter 0 needs to look at *hundreds* — every active market, every cycle —
+and only fires when YES and NO together cost more than $1. That doesn&apos;t
+happen in one of every ten markets. It happens in one of every three
+hundred, and only for a few seconds at a time.
+
+This chapter builds the loop: a daemon that polls a list of markets every
+30 seconds, computes `YES_ask + NO_ask` for each, and prints the ones that
+are over $1.02. We&apos;ll also fix a bug you almost certainly *will* hit
+when you write your own version: the same opportunity getting re-flagged
+every cycle until it disappears.
+
+## What a scanner is, conceptually
+
+A scanner is a loop. That&apos;s genuinely it. The loop has three jobs:
+
+1. **Fan out** — fetch the current state of N markets in parallel-ish.
+2. **Filter** — keep only the ones that look interesting.
+3. **Dedupe** — don&apos;t scream about the same opportunity every cycle.
+
+Step 3 is where most beginner scanners get embarrassing. If you log a
+$1.04 gap on cycle 1 and don&apos;t remember you logged it, you&apos;ll
+log it again on cycle 2, cycle 3, cycle 4, until either someone trades it
+out or the market closes. Your terminal becomes useless. Worse — if this
+were wired to a Telegram alert, you&apos;d ship 30 messages about one
+opportunity.
+
+The simplest dedup that works: keep a bounded set of "things I&apos;ve
+already flagged" and check it before printing.
+
+## Run it
+
+```bash
+cd polybot-learn/tutorials/chapter_03
+pip install -r requirements.txt
+python main.py
+```
+
+Expected output (your numbers will differ; most cycles will print nothing
+at all):
+
+```
+[scan 1] checked 50 markets in 8.2s
+[scan 2] checked 50 markets in 7.9s
+[scan 3] checked 50 markets in 8.4s
+  > Will the Fed cut rates in December?  YES $0.620 + NO $0.412 = $1.032 (3.2% gross)
+[scan 4] checked 50 markets in 8.0s
+[scan 5] checked 50 markets in 8.1s
+```
+
+The scanner already saw that Fed-cut market on scan 3 and won&apos;t print
+it again on scan 4 even though the gap probably still exists. That&apos;s
+the dedup working.
+
+## The code
+
+```python
+import json
+import time
+from collections import deque
+
+import requests
+
+GAMMA_API = "https://gamma-api.polymarket.com"
+CLOB_API = "https://clob.polymarket.com"
+
+THRESHOLD = 1.02         # YES + NO must sum to at least this to flag
+SCAN_INTERVAL_SEC = 30
+MARKETS_PER_SCAN = 50
+SEEN_MAX = 200           # remember this many recent flags before forgetting
+
+
+def fetch_active_markets(limit: int) -> list[dict]:
+    """Fetch the most-active currently-trading markets."""
+    response = requests.get(
+        f"{GAMMA_API}/events",
+        params={
+            "limit": limit,
+            "active": "true",
+            "closed": "false",
+            "order": "volume24hr",
+            "ascending": "false",
+        },
+        timeout=15,
+    )
+    response.raise_for_status()
+    out: list[dict] = []
+    for event in response.json():
+        for market in event.get("markets", []):
+            if not market.get("closed"):
+                out.append(market)
+    return out
+
+
+def fetch_book(token_id: str) -> dict | None:
+    """Fetch one side of the orderbook. Returns None on any HTTP error."""
+    try:
+        response = requests.get(
+            f"{CLOB_API}/book",
+            params={"token_id": token_id},
+            timeout=10,
+        )
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException:
+        return None
+
+
+def best_ask(book: dict | None) -> float | None:
+    if not book:
+        return None
+    asks = book.get("asks", [])
+    if not asks:
+        return None
+    return min(float(a["price"]) for a in asks)
+
+
+def parse_token_ids(market: dict) -> list[str]:
+    raw = market.get("clobTokenIds", "[]")
+    return json.loads(raw) if isinstance(raw, str) else raw
+
+
+def scan_once(seen: deque) -> tuple[int, list[str]]:
+    """One pass over the active markets. Returns (count_checked, hits)."""
+    hits: list[str] = []
+    markets = fetch_active_markets(MARKETS_PER_SCAN)
+    for market in markets:
+        token_ids = parse_token_ids(market)
+        if len(token_ids) < 2:
+            continue
+
+        yes_ask = best_ask(fetch_book(token_ids[0]))
+        no_ask = best_ask(fetch_book(token_ids[1]))
+        if yes_ask is None or no_ask is None:
+            continue
+
+        total = yes_ask + no_ask
+        if total < THRESHOLD:
+            continue
+
+        # Dedup key: the pair of token IDs uniquely identifies the market
+        # regardless of which side we call YES or NO.
+        key = tuple(sorted(token_ids))
+        if key in seen:
+            continue
+        seen.append(key)
+
+        edge_pct = (total - 1.0) * 100
+        question = (market.get("question") or "?")[:60]
+        hits.append(
+            f"  > {question}  YES ${yes_ask:.3f} + NO ${no_ask:.3f} "
+            f"= ${total:.3f} ({edge_pct:.1f}% gross)"
+        )
+
+    return len(markets), hits
+
+
+def main() -> None:
+    seen: deque = deque(maxlen=SEEN_MAX)
+    cycle = 0
+    while True:
+        cycle += 1
+        start = time.time()
+        try:
+            checked, hits = scan_once(seen)
+            elapsed = time.time() - start
+            print(f"[scan {cycle}] checked {checked} markets in {elapsed:.1f}s")
+            for line in hits:
+                print(line)
+        except Exception as exc:
+            print(f"[scan {cycle}] error: {exc}")
+        time.sleep(SCAN_INTERVAL_SEC)
+
+
+if __name__ == "__main__":
+    main()
+```
+
+A few things worth pausing on.
+
+### Why a `deque` and not a `set`
+
+`seen` is a `collections.deque(maxlen=200)` — an ordered, bounded queue.
+A regular `set` would never forget anything, which sounds great until
+you realize markets get re-listed, re-priced, and re-quoted constantly.
+After a week the set has thousands of stale keys and the dedup is doing
+work for nothing.
+
+The bounded deque means "remember the last 200 flags I made." Old flags
+fall off the back and become eligible for re-flagging. For a 30-second
+scan loop, that&apos;s roughly 100 minutes of memory — short enough that
+a re-listed opportunity can be flagged again, long enough that you
+won&apos;t spam the same gap during one trading session.
+
+There&apos;s a subtle bug in this approach worth knowing about: a very
+hot day with 200 flags in 100 minutes will start letting old flags re-fire.
+For a real bot you&apos;d use a TTL set keyed on (token_pair, hour). For
+chapter 3 the deque is fine.
+
+### Why `gross` and not `net`
+
+The output says `3.2% gross`. Gross means: before fees, before slippage,
+before depth limits. The actual *net* edge after you&apos;ve traded against
+the book is almost always less.
+
+- **Fees** — Polymarket charges a transaction fee. Kalshi charges a
+  per-contract fee. Both eat into the gap.
+- **Slippage** — to actually capture a $1.04 gap you&apos;d need to take
+  the YES best ask AND the NO best ask. If the depth is shallow, the
+  next levels of the book might already be back under $1.00.
+- **Depth** — a 3% gap on 5 contracts is a few cents of profit. A 3% gap
+  on 5,000 contracts is a real opportunity. The scanner doesn&apos;t
+  filter for depth yet. Chapter 5 will.
+
+Calling it `gross` in the output is a small honesty discipline: the
+number on screen is *not* what you&apos;ll make.
+
+### The sequential `requests.get` is slow on purpose
+
+50 markets × 2 books = 100 HTTP calls per cycle. At maybe 100ms per call
+that&apos;s ~10 seconds, which is what you see in the output. You could
+make this 5x faster with `asyncio` and `aiohttp`. We&apos;re not doing
+that yet because (a) it adds a chapter of complexity for a 5x speedup
+when 30s of latency is fine, and (b) Polymarket has rate limits that the
+async version will hit faster.
+
+We&apos;ll graduate to `aiohttp` in chapter 6 alongside paper trading,
+where actual latency starts mattering.
+
+## Try this before moving on
+
+Two small experiments:
+
+1. **Lower the threshold** to `THRESHOLD = 1.005`. Run for a few minutes.
+   You&apos;ll get 10x more hits, and almost all of them are noise: gaps
+   so small that fees alone would eat the profit. This is a useful
+   feeling — it&apos;s why "find an opportunity" and "find a *tradeable*
+   opportunity" are different problems.
+
+2. **Print the timestamp on each hit**. Add a column for `time.strftime(
+   "%H:%M:%S")` at the start of each line. Run for an hour. Notice that
+   gaps tend to cluster around news events and market close — not
+   uniformly across the day.
+
+If you get bored you can skip these. They&apos;re mostly here so the
+intuition that "scanners produce mostly noise" lands viscerally before
+chapter 5 introduces the gates that filter the noise.
+
+## What you just learned
+
+- A scanner is a polling loop with three jobs: fan out, filter, dedupe.
+- Bounded-memory dedup (`deque(maxlen=N)`) is the simplest fix to the
+  most common scanner bug: the same opportunity logged a hundred times.
+- `gross` and `net` are different numbers; the screen always shows gross,
+  the bank account only sees net.
+- Sync `requests` is slow but correct. Don&apos;t reach for `asyncio`
+  until you have a reason.
+
+## What&apos;s next
+
+[Chapter 4](/polybot/chapter-4) answers the next question: now that the
+scanner found a market with a 3.2% gap, *how much should you bet?* The
+Kelly criterion gives you the optimal answer in 20 lines of code, and
+the reason every serious trader uses *half* of that answer.
+
+</div>

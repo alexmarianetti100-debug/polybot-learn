@@ -1,0 +1,3 @@
+# No external dependencies — pure stdlib.
+# This file exists so `pip install -r requirements.txt` is a no-op rather
+# than an error if you copy the chapter-3 muscle memory into chapter 4.

@@ -41,7 +41,7 @@ const chapters: Chapter[] = [
     title: "Your first scanner",
     blurb:
       "A daemon that polls hundreds of markets, finds threshold violations, and never trades twice on the same opportunity.",
-    status: "coming-soon",
+    status: "available",
   },
   {
     number: 4,
@@ -49,7 +49,7 @@ const chapters: Chapter[] = [
     title: "Sizing with the Kelly criterion",
     blurb:
       "Optimal bet sizing in 20 lines, plus the reason every serious trader uses half-Kelly instead.",
-    status: "coming-soon",
+    status: "available",
   },
   {
     number: 5,
