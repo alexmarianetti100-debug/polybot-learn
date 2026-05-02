@@ -20,7 +20,7 @@ export default function PolybotLayout({
               chapters
             </Link>
             <a
-              href="https://github.com/alexmarianetti/polybot-learn"
+              href="https://github.com/alexmarianetti100-debug/polybot-learn"
               className="hover:text-foreground"
               target="_blank"
               rel="noopener noreferrer"
@@ -38,7 +38,7 @@ export default function PolybotLayout({
           <span>
             By{" "}
             <a
-              href="https://twitter.com/alexmarianetti"
+              href="https://twitter.com/marianettialex"
               className="underline hover:text-foreground"
             >
               Alex Marianetti
